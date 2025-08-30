@@ -38,7 +38,7 @@ STORAGE_MOUNT="/storage"
 
 SFTP_USER="sftpuser"
 
-SFTP_PASSWORD="T@kt@!r@n"  # Change this in production
+SFTP_PASSWORD="SecurePass123!"  # Change this in production
 
 
 
@@ -94,7 +94,7 @@ sudo apt update && sudo apt upgrade -y
 
 
 
-# Step 3: Install required packages
+# Step 3: Install required packages (با تصحیح نام fail2ban)
 
 print_status "Installing required packages..."
 
@@ -340,7 +340,13 @@ sudo systemctl restart smbd nmbd nfs-kernel-server ssh
 
 
 
-# Step 14: Create management script
+# Step 14: Restart SSH for SFTP config
+
+sudo systemctl restart ssh
+
+
+
+# Step 15: Create management script
 
 print_status "Creating management script..."
 
@@ -386,7 +392,7 @@ case $choice in
 
         echo "NFS: $(hostname -I | awk '{print $1}'):/storage/nfs"
 
-        echo "SFTP: sftp://$SFTP_USER@$(hostname -I | awk '{print $1}')"
+        echo "SFTP: sftp://sftpuser@$(hostname -I | awk '{print $1}')"
 
         echo "SSH: ssh://$(whoami)@$(hostname -I | awk '{print $1}')"
 
@@ -404,7 +410,7 @@ sudo chmod +x /usr/local/bin/storage-manager
 
 
 
-# Step 15: Final checks
+# Step 16: Final checks
 
 print_status "Running final checks..."
 
@@ -412,11 +418,9 @@ sudo mount -a
 
 df -h $STORAGE_MOUNT
 
-sudo systemctl status smbd nmbd nfs-kernel-server ssh
 
 
-
-# Step 16: Display connection information
+# Step 17: Display connection information
 
 echo "========================================="
 
