@@ -38,7 +38,7 @@ STORAGE_MOUNT="/storage"
 
 SFTP_USER="sftpuser"
 
-SFTP_PASSWORD="SecurePass123!"  # Change this in production
+SFTP_PASSWORD="T@kt@!r@n"  # Change this in production
 
 
 
