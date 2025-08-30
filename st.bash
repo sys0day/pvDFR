@@ -1,465 +1,285 @@
 #!/bin/bash
 
-# Storage Server Auto-Setup Script for Windows Compatibility
-
-# Reset and automate all steps
-
-
+# pvDFR - Physical Volume Data and File Recovery
+# Author: sys0day
+# Description: Storage setup and management script
 
 set -e  # Exit on any error
 
-
-
-echo "=== Storage Server Auto-Setup ==="
-
-echo "Target: Windows-Compatible Storage Server"
-
-echo "========================================="
-
-
-
 # Colors for output
-
 RED='\033[0;31m'
-
 GREEN='\033[0;32m'
-
 YELLOW='\033[1;33m'
-
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-
-
-# Configuration
-
-STORAGE_DEVICE="/dev/sdb"
-
-STORAGE_MOUNT="/storage"
-
-SFTP_USER="sftpuser"
-
-SFTP_PASSWORD="T@kt@!r@n"  # Change this in production
-
-
-
-# Function to print status
-
-print_status() {
-
-    echo -e "${GREEN}[✓]${NC} $1"
-
+# Logging functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-
-
-print_warning() {
-
-    echo -e "${YELLOW}[!]${NC} $1"
-
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
-
-
-print_error() {
-
-    echo -e "${RED}[✗]${NC} $1"
-
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
-
-
-# Step 1: Reset and cleanup
-
-echo "Step 1: Cleaning up previous setup..."
-
-sudo umount -f $STORAGE_MOUNT 2>/dev/null || true
-
-sudo vgremove -f storage-vg 2>/dev/null || true
-
-sudo pvremove -f $STORAGE_DEVICE 2>/dev/null || true
-
-sudo rm -rf $STORAGE_MOUNT
-
-sudo sed -i '/\/storage/d' /etc/fstab
-
-sudo sed -i '/sftpuser/d' /etc/passwd /etc/shadow /etc/group 2>/dev/null || true
-
-
-
-# Step 2: Update system
-
-print_status "Updating system packages..."
-
-sudo apt update && sudo apt upgrade -y
-
-
-
-# Step 3: Install required packages (با تصحیح نام fail2ban)
-
-print_status "Installing required packages..."
-
-sudo apt install -y lvm2 parted samba samba-common-bin nfs-kernel-server fail2ban ufw curl wget vim htop
-
-
-
-# Step 4: Setup storage device
-
-print_status "Setting up storage device $STORAGE_DEVICE..."
-
-sudo parted -s $STORAGE_DEVICE mklabel gpt
-
-sudo parted -s $STORAGE_DEVICE mkpart primary 0% 100%
-
-sudo pvcreate $STORAGE_DEVICE
-
-sudo vgcreate storage-vg $STORAGE_DEVICE
-
-sudo lvcreate -l 100%FREE -n storage-lv storage-vg
-
-sudo mkfs.ext4 /dev/storage-vg/storage-lv
-
-
-
-# Step 5: Create mount point and mount
-
-print_status "Creating mount point..."
-
-sudo mkdir -p $STORAGE_MOUNT
-
-echo '/dev/storage-vg/storage-lv /storage ext4 defaults 0 2' | sudo tee -a /etc/fstab
-
-sudo mount -a
-
-
-
-# Step 6: Create directory structure
-
-print_status "Creating directory structure..."
-
-sudo mkdir -p $STORAGE_MOUNT/{shared,nfs,sftp,backups}
-
-
-
-# Step 7: Setup Samba for Windows sharing
-
-print_status "Configuring Samba for Windows compatibility..."
-
-sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.backup
-
-
-
-# Create optimized Samba config for Windows
-
-sudo tee /etc/samba/smb.conf > /dev/null << EOF
-
-[global]
-
-   workgroup = WORKGROUP
-
-   server string = Ubuntu Storage Server
-
-   security = user
-
-   map to guest = Bad User
-
-   name resolve order = bcast host
-
-   wins support = yes
-
-   socket options = TCP_NODELAY SO_RCVBUF=65536 SO_SNDBUF=65536
-
-   max log size = 1000
-
-   dns proxy = no
-
-
-
-[Shared-Storage]
-
-   path = $STORAGE_MOUNT/shared
-
-   browsable = yes
-
-   writable = yes
-
-   guest ok = yes
-
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Check if running as root
+check_root() {
+    if [[ $EUID -eq 0 ]]; then
+        log_error "This script should not be run as root"
+        exit 1
+    fi
+}
+
+# Check for sudo privileges
+check_sudo() {
+    if ! sudo -v; then
+        log_error "User does not have sudo privileges"
+        exit 1
+    fi
+}
+
+# Update system packages
+update_system() {
+    log_info "(1) Updating system packages..."
+    sudo apt update
+    sudo apt upgrade -y
+    log_success "System updated successfully"
+}
+
+# Install required packages
+install_packages() {
+    log_info "(2) Installing required packages..."
+    
+    # Define packages array
+    packages=(
+        lvm2
+        parted
+        samba
+        samba-common-bin
+        nfs-kernel-server
+        fail2ban
+        ufw
+        curl
+        wget
+        vim
+        htop
+    )
+    
+    # Install packages
+    if sudo apt install -y "${packages[@]}"; then
+        log_success "Packages installed successfully"
+    else
+        log_error "Failed to install packages"
+        exit 1
+    fi
+    
+    # Verify critical packages are installed
+    log_info "Verifying package installation..."
+    for pkg in lvm2 parted samba nfs-kernel-server; do
+        if dpkg -l | grep -q "^ii  $pkg "; then
+            log_success "$pkg is installed correctly"
+        else
+            log_error "$pkg is not installed properly"
+            exit 1
+        fi
+    done
+}
+
+# Setup storage device
+setup_storage() {
+    local device="${1:-/dev/sdb}"
+    
+    log_info "(3) Setting up storage device $device"
+    
+    # Check if device exists
+    if [[ ! -b "$device" ]]; then
+        log_error "Device $device not found or not a block device"
+        exit 1
+    fi
+    
+    # Check if device is mounted
+    if mount | grep -q "$device"; then
+        log_warning "Device $device is mounted. Unmounting..."
+        sudo umount "$device"* 2>/dev/null || true
+    fi
+    
+    # Clear previous setup
+    log_info "Clearing up previous setup..."
+    sudo wipefs -a "$device"
+    sudo dd if=/dev/zero of="$device" bs=1M count=100 status=progress
+    log_success "Previous setup cleared"
+    
+    # Create partition
+    log_info "Creating partition on $device..."
+    sudo parted "$device" mklabel gpt
+    sudo parted "$device" mkpart primary 0% 100%
+    sudo parted "$device" set 1 lvm on
+    
+    # Refresh partition table
+    sudo partprobe "$device"
+    
+    # Create physical volume
+    local partition="${device}1"
+    log_info "Creating physical volume on $partition..."
+    sudo pvcreate "$partition"
+    
+    # Create volume group
+    log_info "Creating volume group..."
+    sudo vgcreate storage_vg "$partition"
+    
+    # Create logical volume
+    log_info "Creating logical volume..."
+    sudo lvcreate -l 100%FREE -n storage_lv storage_vg
+    
+    # Format the volume
+    log_info "Formatting logical volume..."
+    sudo mkfs.ext4 /dev/storage_vg/storage_lv
+    
+    # Create mount point
+    log_info "Creating mount point..."
+    sudo mkdir -p /mnt/storage
+    if [ ! -d "/mnt/storage" ]; then
+        sudo mkdir -p "/mnt/storage" || {
+            log_error "Failed to create directory /mnt/storage"
+            exit 1
+        }
+    fi
+    
+    # Mount the volume
+    log_info "Mounting storage..."
+    sudo mount /dev/storage_vg/storage_lv /mnt/storage
+    
+    # Add to fstab for automatic mounting
+    log_info "Adding to fstab..."
+    echo "/dev/storage_vg/storage_lv /mnt/storage ext4 defaults 0 2" | sudo tee -a /etc/fstab
+    
+    log_success "Storage setup completed successfully"
+}
+
+# Setup Samba share
+setup_samba() {
+    log_info "(4) Setting up Samba share..."
+    
+    # Backup original smb.conf
+    sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.backup
+    
+    # Add share configuration
+    cat << EOF | sudo tee -a /etc/samba/smb.conf
+[storage]
+   path = /mnt/storage
+   browseable = yes
    read only = no
-
-   create mask = 0777
-
-   directory mask = 0777
-
-   force user = nobody
-
-   force group = nogroup
-
-   inherit permissions = yes
-
-   inherit owner = yes
-
-
-
-[Backups]
-
-   path = $STORAGE_MOUNT/backups
-
-   browsable = yes
-
-   writable = yes
-
-   valid users = @samba
-
-   read only = no
-
-   create mask = 0770
-
-   directory mask = 0770
-
+   guest ok = no
+   valid users = $USER
+   create mask = 0775
+   directory mask = 0775
 EOF
-
-
-
-# Step 8: Create Samba user
-
-print_status "Creating Samba user..."
-
-sudo groupadd samba 2>/dev/null || true
-
-sudo useradd -M -G samba -s /usr/sbin/nologin smbuser 2>/dev/null || true
-
-echo -e "smbpass\nsmbpass" | sudo smbpasswd -a smbuser
-
-
-
-# Step 9: Setup NFS
-
-print_status "Configuring NFS..."
-
-sudo tee /etc/exports > /dev/null << EOF
-
-$STORAGE_MOUNT/nfs *(rw,sync,no_subtree_check,no_root_squash)
-
-$STORAGE_MOUNT/shared *(rw,sync,no_subtree_check)
-
-EOF
-
-
-
-# Step 10: Setup SFTP user
-
-print_status "Setting up SFTP user..."
-
-sudo useradd -m -d $STORAGE_MOUNT/sftp -s /usr/sbin/nologin $SFTP_USER
-
-echo -e "$SFTP_PASSWORD\n$SFTP_PASSWORD" | sudo passwd $SFTP_USER
-
-sudo chown $SFTP_USER:$SFTP_USER $STORAGE_MOUNT/sftp
-
-sudo chmod 755 $STORAGE_MOUNT/sftp
-
-sudo mkdir -p $STORAGE_MOUNT/sftp/upload
-
-sudo chown $SFTP_USER:$SFTP_USER $STORAGE_MOUNT/sftp/upload
-
-
-
-# Configure SSH for SFTP
-
-sudo tee -a /etc/ssh/sshd_config > /dev/null << EOF
-
-
-
-# SFTP Configuration
-
-Subsystem sftp internal-sftp
-
-
-
-Match User $SFTP_USER
-
-    ChrootDirectory $STORAGE_MOUNT/sftp
-
-    ForceCommand internal-sftp
-
-    PasswordAuthentication yes
-
-    PermitTunnel no
-
-    AllowAgentForwarding no
-
-    AllowTcpForwarding no
-
-    X11Forwarding no
-
-EOF
-
-
-
-# Step 11: Set permissions
-
-print_status "Setting permissions..."
-
-sudo chown -R nobody:nogroup $STORAGE_MOUNT/shared
-
-sudo chown -R nobody:nogroup $STORAGE_MOUNT/nfs
-
-sudo chmod -R 2775 $STORAGE_MOUNT/shared
-
-sudo chmod -R 2775 $STORAGE_MOUNT/nfs
-
-
-
-# Step 12: Configure firewall
-
-print_status "Configuring firewall..."
-
-sudo ufw --force enable
-
-sudo ufw allow ssh
-
-sudo ufw allow 139,445/tcp  # Samba
-
-sudo ufw allow 2049/tcp     # NFS
-
-sudo ufw allow 443/tcp      # HTTPS
-
-
-
-# Step 13: Enable and start services
-
-print_status "Starting services..."
-
-sudo systemctl daemon-reload
-
-sudo systemctl enable smbd nmbd nfs-kernel-server ssh
-
-sudo systemctl restart smbd nmbd nfs-kernel-server ssh
-
-
-
-# Step 14: Restart SSH for SFTP config
-
-sudo systemctl restart ssh
-
-
-
-# Step 15: Create management script
-
-print_status "Creating management script..."
-
-sudo tee /usr/local/bin/storage-manager > /dev/null << 'EOF'
-
-#!/bin/bash
-
-echo "=== Storage Server Manager ==="
-
-echo "1. Show disk usage"
-
-echo "2. Show service status"
-
-echo "3. Restart all services"
-
-echo "4. Check network shares"
-
-echo "5. Show connection info"
-
-
-
-read -p "Select option: " choice
-
-
-
-case $choice in
-
-    1) df -h /storage; du -sh /storage/* ;;
-
-    2) systemctl status smbd nmbd nfs-kernel-server ssh ;;
-
-    3) systemctl restart smbd nmbd nfs-kernel-server ssh ;;
-
-    4) echo "Samba shares:"; smbclient -L localhost; echo "NFS exports:"; showmount -e localhost ;;
-
-    5) 
-
-        echo "=== Connection Information ==="
-
-        echo "Samba: \\\\$(hostname -I | awk '{print $1}')\Shared-Storage"
-
-        echo "Samba: \\\\$(hostname -I | awk '{print $1}')\Backups"
-
-        echo "NFS: $(hostname -I | awk '{print $1}'):/storage/nfs"
-
-        echo "SFTP: sftp://sftpuser@$(hostname -I | awk '{print $1}')"
-
-        echo "SSH: ssh://$(whoami)@$(hostname -I | awk '{print $1}')"
-
-        ;;
-
-    *) echo "Invalid option" ;;
-
-esac
-
-EOF
-
-
-
-sudo chmod +x /usr/local/bin/storage-manager
-
-
-
-# Step 16: Final checks
-
-print_status "Running final checks..."
-
-sudo mount -a
-
-df -h $STORAGE_MOUNT
-
-
-
-# Step 17: Display connection information
-
-echo "========================================="
-
-echo -e "${GREEN}Setup Completed Successfully!${NC}"
-
-echo "========================================="
-
-echo "Storage Size: $(df -h $STORAGE_MOUNT | awk 'NR==2{print $2}')"
-
-echo "Mount Point: $STORAGE_MOUNT"
-
-echo ""
-
-echo "=== Windows Connection Information ==="
-
-echo "Samba Shares:"
-
-echo "  Primary: \\\\$(hostname -I | awk '{print $1}')\\Shared-Storage"
-
-echo "  Backups: \\\\$(hostname -I | awk '{print $1}')\\Backups"
-
-echo ""
-
-echo "=== Linux/Mac Connection Information ==="
-
-echo "NFS: $(hostname -I | awk '{print $1}'):/storage/nfs"
-
-echo "SFTP: sftp://$SFTP_USER@$(hostname -I | awk '{print $1}')"
-
-echo ""
-
-echo "=== Management ==="
-
-echo "Run: storage-manager"
-
-echo "Samba User: smbuser / smbpass"
-
-echo "SFTP User: $SFTP_USER / $SFTP_PASSWORD"
-
-echo "========================================="
-
-
-
-print_warning "Please change default passwords in production environment!"
+    
+    # Set Samba password
+    log_info "Setting Samba password for user $USER"
+    sudo smbpasswd -a "$USER"
+    
+    # Restart Samba service
+    sudo systemctl restart smbd
+    sudo systemctl enable smbd
+    
+    log_success "Samba share setup completed"
+}
+
+# Setup NFS share
+setup_nfs() {
+    log_info "(5) Setting up NFS share..."
+    
+    # Add to exports
+    echo "/mnt/storage *(rw,sync,no_subtree_check)" | sudo tee -a /etc/exports
+    
+    # Export and restart NFS
+    sudo exportfs -a
+    sudo systemctl restart nfs-kernel-server
+    sudo systemctl enable nfs-kernel-server
+    
+    log_success "NFS share setup completed"
+}
+
+# Setup firewall
+setup_firewall() {
+    log_info "(6) Setting up firewall..."
+    
+    # Enable UFW
+    sudo ufw enable
+    
+    # Allow SSH
+    sudo ufw allow ssh
+    
+    # Allow Samba ports
+    sudo ufw allow 139/tcp
+    sudo ufw allow 445/tcp
+    
+    # Allow NFS ports
+    sudo ufw allow 111/tcp
+    sudo ufw allow 2049/tcp
+    sudo ufw allow from any to any port nfs
+    
+    log_success "Firewall setup completed"
+}
+
+# Main execution function
+main() {
+    echo "=========================================="
+    echo "   pvDFR - Storage Server Setup Script    "
+    echo "=========================================="
+    
+    check_root
+    check_sudo
+    
+    # Default device
+    local storage_device="/dev/sdb"
+    
+    # Ask for device if not provided
+    if [[ $# -eq 0 ]]; then
+        echo "Available storage devices:"
+        lsblk -d -o NAME,SIZE,MODEL | grep -v "NAME"
+        read -rp "Enter storage device to use (default: /dev/sdb): " user_device
+        storage_device="${user_device:-/dev/sdb}"
+    else
+        storage_device="$1"
+    fi
+    
+    log_info "Target: Windows Convertible Storage Server"
+    log_info "Creating storage container on $storage_device"
+    
+    # Execute all setup steps
+    update_system
+    install_packages
+    setup_storage "$storage_device"
+    setup_samba
+    setup_nfs
+    setup_firewall
+    
+    # Final summary
+    echo "=========================================="
+    log_success "Storage Server Setup Completed!"
+    echo ""
+    log_info "Storage Location: /mnt/storage"
+    log_info "Samba Share: //$(hostname -I | awk '{print $1}')/storage"
+    log_info "NFS Share: $(hostname -I | awk '{print $1}'):/mnt/storage"
+    echo ""
+    log_info "Remember to:"
+    log_info "1. Configure fail2ban for additional security"
+    log_info "2. Set up regular backups"
+    log_info "3. Monitor storage usage"
+    echo "=========================================="
+}
+
+# Handle script execution
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
