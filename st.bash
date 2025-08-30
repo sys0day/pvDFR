@@ -98,9 +98,7 @@ sudo apt update && sudo apt upgrade -y
 
 print_status "Installing required packages..."
 
-sudo apt install -y lvm2 parted samba samba-common-bin nfs-kernel-server \
-
-    fail2ban ufw curl wget vim htop
+sudo apt install -y lvm2 parted samba samba-common-bin nfs-kernel-server fail2ban ufw curl wget vim htop
 
 
 
